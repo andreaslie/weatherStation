@@ -1,5 +1,6 @@
 #include <DHT.h>
 #include <DHT_U.h>
+#include <math.h>
 
 // enable / disable subsystems
 const int isAnemometerActive = 1;
@@ -19,9 +20,9 @@ const int windvanePin = A0;
 const int redLedPin = 0;
 const int blueLedPin = 2;
 
-//#define DHTPIN 13         // what digital pin we're connected to
-//#define DHTTYPE DHT22     // DHT 22  (AM2302), AM2321
-//DHT dht(DHTPIN, DHTTYPE);
+#define DHTPIN 12         // what digital pin we're connected to
+#define DHTTYPE DHT22     // DHT 22  (AM2302), AM2321
+DHT dht(DHTPIN, DHTTYPE);
 
 // timekeeping
 unsigned long lastReportTime = 0;
@@ -34,9 +35,6 @@ volatile int rainCounter = 0;
 volatile int vaneDirection = 0;
 volatile int gustTime = -1;
 
-// reporting data
-volatile int windGust = 0;
-
 volatile boolean redLedState  = true;
 volatile boolean blueLedState = false;
 
@@ -48,8 +46,39 @@ const unsigned long feedbackSeconds = 5;
 const unsigned long reportFeedback = feedbackSeconds * thousand;     // every 10 seconds
 
 //const unsigned long 
-const float windSpeed = 0.666667;              // 2.4 km/h == 0.667 m/s
-const float rainSpeed = 0.2794;                // 0.2794 mm precipitation on every bucket emptying
+const float windSpeed = 0.666667f;                  // 2.4 km/h == 0.667 m/s
+const float windSpeedMph = 1.4913;                  // 2.4 km/h == 0.667 m/s == 1.4913 m/h
+const float rainSpeedInch = 0.0011f;                // 0.2794 mm precipitation on every bucket emptying
+const float rainSpeedMm   = 0.2794f;                // 0.2794 mm precipitation on every bucket emptying
+
+const String wuBegin = "https://weatherstation.wunderground.com/weatherstation/updateweatherstation.php?ID=IHORDALA133&PASSWORD=MXLVDW6X&dateutc=now";
+const String wuEnd = "&action=updateraw";
+
+String floatToString(float & floatval, int precision)
+{
+    int intval = (int)floatval; // downcast
+    float decimals = floatval - (float)intval;
+
+    int power = pow(10, precision);
+
+    decimals *= power;
+    int intdecimals = (int) decimals; // downcast
+
+    String s;
+    s += intval;
+    s += ".";
+
+    for (int i = 0; i < precision - 1; ++i) // n-1 times
+    {
+        power /= 10;
+        if (intdecimals < power)
+            s += "0";
+    }
+
+    s += intdecimals;
+
+    return s;
+}
 
 void toggleLedRed()
 {
@@ -76,9 +105,9 @@ void setup()
   pinMode(windvanePin, INPUT);
   pinMode(anemometerPin, INPUT_PULLUP);
   pinMode(precipitationPin, INPUT_PULLUP);
-  //pinMode(DHTPIN, INPUT_PULLUP);
+  pinMode(DHTPIN, INPUT_PULLUP);
 
-  //dht.begin();
+  dht.begin();
 
   lastReportTime = millis();
   
@@ -91,17 +120,83 @@ void setup()
 
 void transmitWeatherData()
 {
-  // wind
- //Wire.write(windCounter);
+  String wuString = wuBegin;
+  
+  const String wuTemp = "&tempf=";      // ok
+  const String wuHumid = "&humidity=";  // ok
+  const String wuDewpt = "&dewptf=";
+  const String wuRain = "&rainin=";     // ok 60 minutes
+  const String wuBaro = "&baromin=";
+  const String wuWinddir = "&winddir="; // ok
+  const String wuWindspeed = "&windspeedmph="; // ok
+  // windspeedmph - [mph instantaneous wind speed]
+  // windgustmph_10m - [mph past 10 minutes wind gust mph ]
 
-  // wind gust
- // Wire.write(windGust);
-  
-  // wind vane
- // Wire.write(vaneDirection);
-  
-  // rain
- // Wire.write(rainCounter);
+    if (isWindvaneActive == 1)
+    {
+        vaneDirection = mapVaneDirection();
+        Serial.print("Wane Dir: ");
+        Serial.println(vaneDirection);
+        wuString += wuWinddir;
+        wuString += vaneDirection;
+    }
+
+    if (isAnemometerActive == 1)
+    {
+        float windAmount = (windSpeed * (((float)windCounter) / 2.0f) / (float)feedbackSeconds);
+        float windAmountMph = (windSpeedMph * (((float)windCounter) / 2.0f) / (float)feedbackSeconds);
+
+        // wind gust
+        //windGust = (int)((windSpeed * (1000.0f / (float)gustTime)) * 1000.0f);
+
+        Serial.print("Wind: ");
+        Serial.print(windAmount);
+        Serial.println(" ms");
+
+        wuString += wuWindspeed;
+        wuString += floatToString(windAmountMph, 4);
+    }
+
+    if (isRainmeterActive == 1)
+    {
+        float rainAmountInch  = rainSpeedInch  * (float)rainCounter;
+        float rainAmountMm    = rainSpeedMm    * (float)rainCounter;
+        Serial.print("Rain mm: ");
+        Serial.print(floatToString(rainAmountMm, 4));
+        Serial.print("\tRain Inches: ");
+        Serial.println(floatToString(rainAmountInch, 4));
+        wuString += wuRain;
+        wuString += floatToString(rainAmountInch, 4);
+    }
+
+    if (isDhtActive == 1)
+    {
+        float humidity = dht.readHumidity();
+        // Read temperature as Celsius (the default)
+        float tempc = dht.readTemperature();
+        // Read temperature as Fahrenheit (isFahrenheit = true)
+        float tempf = dht.readTemperature(true);
+
+        Serial.print("Humidity: ");
+        Serial.print(humidity);
+        Serial.print(" %\t");
+        Serial.print("Temperature: ");
+        Serial.print(tempc);
+        Serial.print(" *C ");
+        Serial.print(tempf);
+        Serial.println(" *F");
+        wuString += wuHumid;
+        wuString += humidity;
+        wuString += wuTemp;
+        wuString += tempf;
+
+        //float dew = 243.04 * (log(humidity/100)+((17.625*tempf)/(243.04+tempf))) / (17.625-log(humidity/100)-((17.625*tempf)/(243.04+tempf)));
+        //wuString += wuDewpt;
+        //wuString += dew;
+    }
+
+    wuString += wuEnd;
+    Serial.println(wuString);
 }
 
 /**
@@ -111,7 +206,7 @@ void resetCounters()
 {
     rainCounter = 0;
     windCounter = 0;
-    windGust = 0.0f;
+    //windGust = 0.0f;
 }
 
 int mapVaneDirection()
@@ -151,75 +246,9 @@ void loop()
     // update last report time to current
     lastReportTime = currentTime;
 
-    // rain
-    float rainAmount = rainSpeed * (float)rainCounter;
-
-    // wind
-    float windAmount = (windSpeed * (((float)windCounter) / 2.0f) / (float)feedbackSeconds);
-
-    // wind gust
-    windGust = (int)((windSpeed * (1000.0f / (float)gustTime)) * 1000.0f);
-
-    // wind direction
-    vaneDirection = mapVaneDirection();
-
-    if (isWindvaneActive == 1)
-    {
-        Serial.print("Wane Dir: ");
-        Serial.println(vaneDirection);
-    }
-
-    if (isAnemometerActive == 1)
-    {
-        Serial.print("Wind: ");
-        Serial.print(windAmount);
-        Serial.println(" ms");
-    }
-
-    if (isRainmeterActive == 1)
-    {
-        Serial.print("Rain: ");
-        Serial.print(rainAmount);
-        Serial.println(" mm");
-    }
-
+    transmitWeatherData();
     resetCounters();
-
-//    if (isDhtActive == 1)
-//    {
-//      float h = dht.readHumidity();
-//      // Read temperature as Celsius (the default)
-//      float t = dht.readTemperature();
-//      // Read temperature as Fahrenheit (isFahrenheit = true)
-//      float f = dht.readTemperature(true);
-//
-//      // Check if any reads failed and exit early (to try again).
-//      // if (isnan(h) || isnan(t) || isnan(f)) {
-//      //    Serial.println("Failed to read from DHT sensor!");
-//      //    return;
-//      // }
-//
-//      // Compute heat index in Fahrenheit (the default)
-//      float hif = dht.computeHeatIndex(f, h);
-//      // Compute heat index in Celsius (isFahreheit = false)
-//      float hic = dht.computeHeatIndex(t, h, false);
-//
-//      Serial.print("Humidity: ");
-//      Serial.print(h);
-//      Serial.print(" %\t");
-//      Serial.print("Temperature: ");
-//      Serial.print(t);
-//      Serial.print(" *C ");
-//      Serial.print(f);
-//      Serial.print(" *F\t");
-//      Serial.print("Heat index: ");
-//      Serial.print(hic);
-//      Serial.print(" *C ");
-//      Serial.print(hif);
-//      Serial.println(" *F");
-//    }
   }
-  
 }
 
 /**
