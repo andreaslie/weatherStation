@@ -33,16 +33,15 @@ volatile unsigned long previousRainInterruptTime = 0;
 volatile int windCounter = 0;
 volatile int rainCounter = 0;
 volatile int vaneDirection = 0;
-volatile int gustTime = -1;
+volatile int gustTime = 0;
 
 volatile boolean redLedState  = true;
 volatile boolean blueLedState = false;
 
 const unsigned int interruptSleep = 2;         // milliseconds delay to avoid multiple readings
 
-//const unsigned int reportFeedback = 3600000; // every hour
 const unsigned long thousand = 1000;
-const unsigned long feedbackSeconds = 5;
+const unsigned long feedbackSeconds = 10;
 const unsigned long reportFeedback = feedbackSeconds * thousand;     // every 10 seconds
 
 //const unsigned long 
@@ -129,7 +128,6 @@ void transmitWeatherData()
   const String wuBaro = "&baromin=";
   const String wuWinddir = "&winddir="; // ok
   const String wuWindspeed = "&windspeedmph="; // ok
-  // windspeedmph - [mph instantaneous wind speed]
   // windgustmph_10m - [mph past 10 minutes wind gust mph ]
 
     if (isWindvaneActive == 1)
@@ -145,9 +143,18 @@ void transmitWeatherData()
     {
         float windAmount = (windSpeed * (((float)windCounter) / 2.0f) / (float)feedbackSeconds);
         float windAmountMph = (windSpeedMph * (((float)windCounter) / 2.0f) / (float)feedbackSeconds);
+        float windGustMph = (windSpeedMph * (500.0f / (float)gustTime)); // 2 rev per sec == 0.66667 m/s
 
-        // wind gust
-        //windGust = (int)((windSpeed * (1000.0f / (float)gustTime)) * 1000.0f);
+        if (gustTime == 0) // check if no wind at all
+            windGustMph = 0;
+
+        Serial.print("WindGust: ");
+        Serial.print(windGustMph);
+        Serial.println(" mph");
+
+        Serial.print("WindSpeed: ");
+        Serial.print(windAmountMph);
+        Serial.println(" mph");
 
         Serial.print("Wind: ");
         Serial.print(windAmount);
@@ -172,11 +179,11 @@ void transmitWeatherData()
     if (isDhtActive == 1)
     {
         float humidity = dht.readHumidity();
-        // Read temperature as Celsius (the default)
-        float tempc = dht.readTemperature();
-        // Read temperature as Fahrenheit (isFahrenheit = true)
-        float tempf = dht.readTemperature(true);
-
+        float tempc = dht.readTemperature();      // Read temperature as Celsius (the default)
+        float tempf = dht.readTemperature(true);  // Read temperature as Fahrenheit (isFahrenheit = true)
+        float dew = 237.7f * (17.27f * tempc/(237.7f + tempc) + log(humidity/100.0f)) / (17.27f - (17.27f * tempc/(237.7f + tempc)+ log(humidity/100.0f)));
+        dew = dew * (9.0f/5.0f) + 32.0f; // to fahrenheit
+        
         Serial.print("Humidity: ");
         Serial.print(humidity);
         Serial.print(" %\t");
@@ -185,14 +192,15 @@ void transmitWeatherData()
         Serial.print(" *C ");
         Serial.print(tempf);
         Serial.println(" *F");
+        Serial.print("Dew:");
+        Serial.println(dew);
+
         wuString += wuHumid;
         wuString += humidity;
         wuString += wuTemp;
-        wuString += tempf;
-
-        //float dew = 243.04 * (log(humidity/100)+((17.625*tempf)/(243.04+tempf))) / (17.625-log(humidity/100)-((17.625*tempf)/(243.04+tempf)));
-        //wuString += wuDewpt;
-        //wuString += dew;
+        wuString += tempf;      
+        wuString += wuDewpt;
+        wuString += dew;
     }
 
     wuString += wuEnd;
@@ -206,7 +214,6 @@ void resetCounters()
 {
     rainCounter = 0;
     windCounter = 0;
-    //windGust = 0.0f;
 }
 
 int mapVaneDirection()
@@ -279,9 +286,10 @@ void windInterrupt()
       toggleLedRed();
 
       ++windCounter;
-      if (gustTime < 0 || gustTime > diffTime)
-        gustTime = diffTime;
-        
+
+      if (gustTime == 0 || gustTime > diffTime) // recorded gust is longer than what is now
+        gustTime = diffTime;                    // time between each sampled gusts of wind
+
       previousWindInterruptTime = currentMillis;
   }
 }
