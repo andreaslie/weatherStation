@@ -25,26 +25,25 @@ const int blueLedPin = 2;
 DHT dht(DHTPIN, DHTTYPE);
 
 // timekeeping
-unsigned long lastReportTime = 0;
+unsigned long lastNtpCheckTime        = 0;
+const unsigned long thresholdTimeNtp  = 10000; // ten sec threshold
+
 volatile unsigned long previousWindInterruptTime = 0;
 volatile unsigned long previousRainInterruptTime = 0;
 
 // counters used in the ISR's
 volatile int windCounter = 0;
-volatile int rainCounter = 0;
+volatile int rainCounterHourly = 0;
+volatile int rainCounterDaily = 0;
 volatile int vaneDirection = 0;
 volatile int gustTime = 0;
 
 volatile boolean redLedState  = true;
-volatile boolean blueLedState = false;
 
 const unsigned int interruptSleep = 2;         // milliseconds delay to avoid multiple readings
+const unsigned long feedbackSeconds = 60;
+const unsigned long reportFeedback = feedbackSeconds * 1000;     // every 10 seconds
 
-const unsigned long thousand = 1000;
-const unsigned long feedbackSeconds = 10;
-const unsigned long reportFeedback = feedbackSeconds * thousand;     // every 10 seconds
-
-//const unsigned long 
 const float windSpeed = 0.666667f;                  // 2.4 km/h == 0.667 m/s
 const float windSpeedMph = 1.4913;                  // 2.4 km/h == 0.667 m/s == 1.4913 m/h
 const float rainSpeedInch = 0.0011f;                // 0.2794 mm precipitation on every bucket emptying
@@ -52,6 +51,17 @@ const float rainSpeedMm   = 0.2794f;                // 0.2794 mm precipitation o
 
 const String wuBegin = "https://weatherstation.wunderground.com/weatherstation/updateweatherstation.php?ID=IHORDALA133&PASSWORD=MXLVDW6X&dateutc=now";
 const String wuEnd = "&action=updateraw";
+
+const String wuTemp       = "&tempf=";         // ok
+const String wuHumid      = "&humidity=";      // ok
+const String wuDewpt      = "&dewptf=";        // ok
+const String wuRain       = "&rainin=";        // ok
+const String wuDailyRain  = "&dailyrainin=";   // ok
+const String wuBaro       = "&baromin=";
+const String wuBaroTemp   = "&temp2f=";
+const String wuWinddir    = "&winddir=";       // ok
+const String wuWindspeed  = "&windspeedmph=";  // ok
+const String wuGustspeed  = "&windgustmph=";   // ok
 
 String floatToString(float & floatval, int precision)
 {
@@ -85,21 +95,12 @@ void toggleLedRed()
     redLedState = !redLedState;
 }
 
-void toggleLedBlue()
-{
-    digitalWrite(blueLedPin, blueLedState);
-    blueLedState = !blueLedState;
-}
-
 void setup()
 {
   Serial.begin(9600);
 
   pinMode(redLedPin, OUTPUT);
   pinMode(redLedPin, redLedState);
-  pinMode(blueLedPin, OUTPUT);
-  pinMode(blueLedPin, blueLedState);
-  
   digitalWrite(anemometerPin, HIGH);
   pinMode(windvanePin, INPUT);
   pinMode(anemometerPin, INPUT_PULLUP);
@@ -107,28 +108,17 @@ void setup()
   pinMode(DHTPIN, INPUT_PULLUP);
 
   dht.begin();
-
-  lastReportTime = millis();
   
   attachInterrupt(anemometerPin, windInterrupt, FALLING);
   attachInterrupt(precipitationPin, rainInterrupt, FALLING);
 
   toggleLedRed();
-  toggleLedBlue();
+  networkSetup();
 }
 
 void transmitWeatherData()
 {
-  String wuString = wuBegin;
-  
-  const String wuTemp = "&tempf=";      // ok
-  const String wuHumid = "&humidity=";  // ok
-  const String wuDewpt = "&dewptf=";
-  const String wuRain = "&rainin=";     // ok 60 minutes
-  const String wuBaro = "&baromin=";
-  const String wuWinddir = "&winddir="; // ok
-  const String wuWindspeed = "&windspeedmph="; // ok
-  // windgustmph_10m - [mph past 10 minutes wind gust mph ]
+    String wuString = wuBegin;
 
     if (isWindvaneActive == 1)
     {
@@ -160,20 +150,35 @@ void transmitWeatherData()
         Serial.print(windAmount);
         Serial.println(" ms");
 
+        windCounter = 0; // reset
+        gustTime    = 0; // reset
+
         wuString += wuWindspeed;
         wuString += floatToString(windAmountMph, 4);
+        wuString += wuGustspeed;
+        wuString += floatToString(windGustMph, 4);
     }
 
     if (isRainmeterActive == 1)
     {
-        float rainAmountInch  = rainSpeedInch  * (float)rainCounter;
-        float rainAmountMm    = rainSpeedMm    * (float)rainCounter;
+        float rainAmountInch  = rainSpeedInch  * (float)rainCounterHourly;
+        float rainAmountMm    = rainSpeedMm    * (float)rainCounterHourly;
         Serial.print("Rain mm: ");
         Serial.print(floatToString(rainAmountMm, 4));
         Serial.print("\tRain Inches: ");
         Serial.println(floatToString(rainAmountInch, 4));
         wuString += wuRain;
         wuString += floatToString(rainAmountInch, 4);
+        rainCounterHourly = 0; // reset
+
+        if (reportNewDay())
+        {
+            //printTime();
+            float rainAmountInchDaily  = rainSpeedInch  * (float)rainCounterDaily;
+            wuString += wuDailyRain;
+            wuString += floatToString(rainAmountInchDaily, 4);
+            rainCounterDaily = 0;  // reset
+        }
     }
 
     if (isDhtActive == 1)
@@ -205,57 +210,50 @@ void transmitWeatherData()
 
     wuString += wuEnd;
     Serial.println(wuString);
-}
 
-/**
-* Resets all counters used in the weather station
-*/
-void resetCounters()
-{
-    rainCounter = 0;
-    windCounter = 0;
+    transmitDataToWeatherUnderground(wuString);
 }
 
 int mapVaneDirection()
 {
-  int vaneValue = analogRead(windvanePin);
-  int vaneDirectionDegrees = 0;
+    int vaneValue = analogRead(windvanePin);
+    int vaneDirectionDegrees = 0;
 
-  if (vaneValue > 800)        // north
-    vaneDirectionDegrees = 0;
-  else if (vaneValue > 740)   // north east
-    vaneDirectionDegrees = 45;
-  else if (vaneValue > 600)   // east
-    vaneDirectionDegrees = 90;
-  else if (vaneValue > 500)   // north west
-    vaneDirectionDegrees = 315;
-  else if (vaneValue > 350)   // south east
-    vaneDirectionDegrees = 135;
-  else if (vaneValue > 200)   // west
-    vaneDirectionDegrees = 270;
-  else if (vaneValue > 100)   // south west
-    vaneDirectionDegrees = 225;
-  else                        // south
-    vaneDirectionDegrees = 180;
-  
-  return vaneDirectionDegrees;
+    if (vaneValue > 800)        // north
+        vaneDirectionDegrees = 0;
+    else if (vaneValue > 740)   // north east
+        vaneDirectionDegrees = 45;
+    else if (vaneValue > 600)   // east
+        vaneDirectionDegrees = 90;
+    else if (vaneValue > 500)   // north west
+        vaneDirectionDegrees = 315;
+    else if (vaneValue > 350)   // south east
+        vaneDirectionDegrees = 135;
+    else if (vaneValue > 200)   // west
+        vaneDirectionDegrees = 270;
+    else if (vaneValue > 100)   // south west
+        vaneDirectionDegrees = 225;
+    else                        // south
+        vaneDirectionDegrees = 180;
+
+    return vaneDirectionDegrees;
 }
 
 void loop()
 {
-  // check to see if we should report anything back
-  unsigned long currentTime = millis();
-  
-  if ((lastReportTime + reportFeedback) <= currentTime)
-  {  
-    toggleLedBlue();
-    
-    // update last report time to current
-    lastReportTime = currentTime;
+    unsigned long currentTime = millis();
 
-    transmitWeatherData();
-    resetCounters();
-  }
+    if ((lastNtpCheckTime + thresholdTimeNtp) <= currentTime)
+    {
+        lastNtpCheckTime = currentTime;
+        checkForNtpUpdate();
+    }
+
+    if (reportNewHour())
+    {
+        //printTime();
+        transmitWeatherData();
+    }
 }
 
 /**
@@ -263,14 +261,15 @@ void loop()
 */
 void rainInterrupt()
 {
-  volatile unsigned long currentMillis = millis();
+    volatile unsigned long currentMillis = millis();
 
-  if ((previousRainInterruptTime + interruptSleep) <= currentMillis)
-  {
-      toggleLedRed();
-      ++rainCounter;
-      previousRainInterruptTime = currentMillis;
-  }
+    if ((previousRainInterruptTime + interruptSleep) <= currentMillis)
+    {
+        toggleLedRed();
+        ++rainCounterHourly;
+        ++rainCounterDaily;
+        previousRainInterruptTime = currentMillis;
+    }
 }
 
 /**
@@ -278,18 +277,17 @@ void rainInterrupt()
 */
 void windInterrupt()
 {
-  volatile unsigned long currentMillis = millis();
-  volatile long diffTime = (currentMillis - previousWindInterruptTime);
-    
-  if (diffTime > interruptSleep)
-  {  
-      toggleLedRed();
+    volatile unsigned long currentMillis = millis();
+    volatile long diffTime = (currentMillis - previousWindInterruptTime);
 
-      ++windCounter;
+    if (diffTime > interruptSleep)
+    {
+        toggleLedRed();
+        ++windCounter;
 
-      if (gustTime == 0 || gustTime > diffTime) // recorded gust is longer than what is now
-        gustTime = diffTime;                    // time between each sampled gusts of wind
+        if (gustTime == 0 || gustTime > diffTime)   // recorded gust is longer than what is now
+            gustTime = diffTime;                    // time between each sampled gusts of wind
 
-      previousWindInterruptTime = currentMillis;
-  }
+        previousWindInterruptTime = currentMillis;
+    }
 }
