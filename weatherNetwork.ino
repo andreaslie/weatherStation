@@ -133,7 +133,7 @@ uint32_t getTime()
 
 bool reportNewHour()
 {
-    int nowMinute = getSeconds(getUnixTime()); // todo switch to minutes
+    int nowMinute = getMinutes(getUnixTime());
     bool timeRollover = false;
 
     if (nowMinute < m_currentMinute)
@@ -145,7 +145,7 @@ bool reportNewHour()
 
 bool reportNewDay()
 {
-    int nowHour = getMinutes(getUnixTime());  // todo switch to hours
+    int nowHour = getHours(getUnixTime());
     bool timeRollover = false;
 
     if (nowHour < m_currentHour)

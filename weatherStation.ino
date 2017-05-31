@@ -1,3 +1,5 @@
+#include <SFE_BMP180.h>
+#include <Wire.h>
 #include <DHT.h>
 #include <DHT_U.h>
 #include <math.h>
@@ -7,18 +9,19 @@ const int isAnemometerActive = 1;
 const int isRainmeterActive = 1;
 const int isWindvaneActive = 1;
 const int isDhtActive = 1;
-const int isBmpActive = 0;
+const int isBmpActive = 1;
 
 // direction for vane
 // S, SW, W, NW, N, NE, E, SE
 const int windVaneOffset = 0;
 
 // pin definitions
-const int anemometerPin = 4;
-const int precipitationPin = 5;
-const int windvanePin = A0;
-const int redLedPin = 0;
-const int blueLedPin = 2;
+const int anemometerPin     = 14;
+const int precipitationPin  = 13;
+const int sdaPin            = 4;
+const int sclPin            = 5;
+const int windvanePin       = A0;
+const int redLedPin         = 0;
 
 #define DHTPIN 12         // what digital pin we're connected to
 #define DHTTYPE DHT22     // DHT 22  (AM2302), AM2321
@@ -57,11 +60,15 @@ const String wuHumid      = "&humidity=";      // ok
 const String wuDewpt      = "&dewptf=";        // ok
 const String wuRain       = "&rainin=";        // ok
 const String wuDailyRain  = "&dailyrainin=";   // ok
-const String wuBaro       = "&baromin=";
-const String wuBaroTemp   = "&temp2f=";
+const String wuBaro       = "&baromin=";       // ok
+const String wuBaroTemp   = "&temp2f=";        // ok
 const String wuWinddir    = "&winddir=";       // ok
 const String wuWindspeed  = "&windspeedmph=";  // ok
 const String wuGustspeed  = "&windgustmph=";   // ok
+
+SFE_BMP180 pressure;
+
+#define ALTITUDE 56.0 // Fantoftneset 4
 
 String floatToString(float & floatval, int precision)
 {
@@ -98,6 +105,11 @@ void toggleLedRed()
 void setup()
 {
   Serial.begin(9600);
+
+  if (pressure.begin())
+      Serial.println("BMP180 init success");
+  else
+      Serial.println("BMP180 init fail\n\n");
 
   pinMode(redLedPin, OUTPUT);
   pinMode(redLedPin, redLedState);
@@ -208,6 +220,66 @@ void transmitWeatherData()
         wuString += dew;
     }
 
+    if (isBmpActive == 1)
+    {
+        char status;
+        double T,P,p0,a;
+
+        status = pressure.startTemperature();
+
+        if (status != 0)
+        {
+            delay(status);
+
+            status = pressure.getTemperature(T);
+            if (status != 0)
+            {
+                // Print out the measurement:
+                Serial.print("temperature: ");
+                Serial.print(T,2);
+                Serial.print(" deg C, ");
+                Serial.print((9.0/5.0)*T+32.0,2);
+                Serial.println(" deg F");
+
+                status = pressure.startPressure(3);
+                if (status != 0)
+                {
+                    delay(status);
+                    status = pressure.getPressure(P,T);
+
+                    if (status != 0)
+                    {
+                        // Print out the measurement:
+                        Serial.print("absolute pressure: ");
+                        Serial.print(P,2);
+                        Serial.print(" mb, ");
+                        Serial.print(P*0.0295333727,2);
+                        Serial.println(" inHg");
+
+                        p0 = pressure.sealevel(P,ALTITUDE);
+                        Serial.print("relative (sea-level) pressure: ");
+                        Serial.print(p0,2);
+                        Serial.print(" mb, ");
+                        Serial.print(p0*0.0295333727,2);
+                        Serial.println(" inHg");
+
+                        float fp0 = (float)(p0*0.0295333727);
+                        float tf  = (9.0f/5.0f)*(float)T+32.0f;
+
+                        wuString += wuBaro;
+                        wuString += floatToString(fp0, 2);
+                        wuString += wuBaroTemp;
+                        wuString += floatToString(tf, 2);
+                    }
+                    else Serial.println("error retrieving pressure measurement\n");
+                }
+                else Serial.println("error starting pressure measurement\n");
+            }
+            else Serial.println("error retrieving temperature measurement\n");
+        }
+        else Serial.println("error starting temperature measurement\n");
+    }
+
     wuString += wuEnd;
     Serial.println(wuString);
 
@@ -268,6 +340,7 @@ void rainInterrupt()
         toggleLedRed();
         ++rainCounterHourly;
         ++rainCounterDaily;
+
         previousRainInterruptTime = currentMillis;
     }
 }
