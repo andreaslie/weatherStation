@@ -33,19 +33,20 @@ const unsigned long thresholdTimeNtp  = 10000; // ten sec threshold
 
 volatile unsigned long previousWindInterruptTime = 0;
 volatile unsigned long previousRainInterruptTime = 0;
+volatile unsigned long previousGustResetTime = 0;
 
 // counters used in the ISR's
 volatile int windCounter = 0;
 volatile int rainCounterHourly = 0;
 volatile int rainCounterDaily = 0;
 volatile int vaneDirection = 0;
-volatile int gustTime = 0;
+volatile int gustMaxRecorded = 0;
+volatile int gustCounter = 0;
 
 volatile boolean redLedState  = true;
 
 const unsigned int interruptSleep = 2;         // milliseconds delay to avoid multiple readings
-const unsigned long feedbackSeconds = 60;
-const unsigned long reportFeedback = feedbackSeconds * 1000;     // every 10 seconds
+const unsigned long feedbackSeconds = 60*60;   // every hour
 
 const float windSpeed = 0.666667f;                  // 2.4 km/h == 0.667 m/s
 const float windSpeedMph = 1.4913;                  // 2.4 km/h == 0.667 m/s == 1.4913 m/h
@@ -145,10 +146,7 @@ void transmitWeatherData()
     {
         float windAmount = (windSpeed * (((float)windCounter) / 2.0f) / (float)feedbackSeconds);
         float windAmountMph = (windSpeedMph * (((float)windCounter) / 2.0f) / (float)feedbackSeconds);
-        float windGustMph = (windSpeedMph * (500.0f / (float)gustTime)); // 2 rev per sec == 0.66667 m/s
-
-        if (gustTime == 0) // check if no wind at all
-            windGustMph = 0;
+        float windGustMph = (windSpeedMph * ((float)gustMaxRecorded) / 2.0f);
 
         Serial.print("WindGust: ");
         Serial.print(windGustMph);
@@ -163,7 +161,7 @@ void transmitWeatherData()
         Serial.println(" ms");
 
         windCounter = 0; // reset
-        gustTime    = 0; // reset
+        gustMaxRecorded    = 0; // reset
 
         wuString += wuWindspeed;
         wuString += floatToString(windAmountMph, 4);
@@ -358,8 +356,16 @@ void windInterrupt()
         toggleLedRed();
         ++windCounter;
 
-        if (gustTime == 0 || gustTime > diffTime)   // recorded gust is longer than what is now
-            gustTime = diffTime;                    // time between each sampled gusts of wind
+        if ((previousGustResetTime - currentMillis) < 1000) // if time is less than a second
+            ++gustCounter;
+        else
+        {
+            gustCounter = 1;
+            previousGustResetTime = currentMillis;
+        }
+
+        if (gustCounter > gustMaxRecorded) // update max recorded wind
+            gustMaxRecorded = gustCounter;
 
         previousWindInterruptTime = currentMillis;
     }
