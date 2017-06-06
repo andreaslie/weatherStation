@@ -46,7 +46,7 @@ volatile int gustCounter = 0;
 volatile boolean redLedState  = true;
 
 const unsigned int interruptSleep = 2;         // milliseconds delay to avoid multiple readings
-const unsigned long feedbackSeconds = 60*60;   // every hour
+const unsigned long windFeedbackSeconds = 120; // every other minute
 
 const float windSpeed = 0.666667f;                  // 2.4 km/h == 0.667 m/s
 const float windSpeedMph = 1.4913;                  // 2.4 km/h == 0.667 m/s == 1.4913 m/h
@@ -63,13 +63,15 @@ const String wuRain       = "&rainin=";        // ok
 const String wuDailyRain  = "&dailyrainin=";   // ok
 const String wuBaro       = "&baromin=";       // ok
 const String wuBaroTemp   = "&temp2f=";        // ok
-const String wuWinddir    = "&winddir=";       // ok
-const String wuWindspeed  = "&windspeedmph=";  // ok
+const String wuWinddir    = "&winddir_avg2m=";       // ok
+const String wuWindspeed  = "&windspdmph_avg2m=";  // ok
 const String wuGustspeed  = "&windgustmph=";   // ok
 
 SFE_BMP180 pressure;
 
 #define ALTITUDE 56.0 // Fantoftneset 4
+
+enum REPORT {EVERY_OTHER_MINUTE, HOURLY, DAILY};
 
 String floatToString(float & floatval, int precision)
 {
@@ -129,7 +131,7 @@ void setup()
   networkSetup();
 }
 
-void transmitWeatherData()
+void transmitWeatherData(REPORT report)
 {
     String wuString = wuBegin;
 
@@ -142,15 +144,16 @@ void transmitWeatherData()
         wuString += vaneDirection;
     }
 
-    if (isAnemometerActive == 1)
+    if (isAnemometerActive == 1) // every other minute
     {
-        float windAmount = (windSpeed * (((float)windCounter) / 2.0f) / (float)feedbackSeconds);
-        float windAmountMph = (windSpeedMph * (((float)windCounter) / 2.0f) / (float)feedbackSeconds);
+        float windAmount = (windSpeed * (((float)windCounter) / 2.0f) / (float)windFeedbackSeconds);
+        float windAmountMph = (windSpeedMph * (((float)windCounter) / 2.0f) / (float)windFeedbackSeconds);
         float windGustMph = (windSpeedMph * ((float)gustMaxRecorded) / 2.0f);
 
         Serial.print("WindGust: ");
         Serial.print(windGustMph);
         Serial.println(" mph");
+        Serial.println(gustMaxRecorded);
 
         Serial.print("WindSpeed: ");
         Serial.print(windAmountMph);
@@ -171,22 +174,25 @@ void transmitWeatherData()
 
     if (isRainmeterActive == 1)
     {
-        float rainAmountInch  = rainSpeedInch  * (float)rainCounterHourly;
-        float rainAmountMm    = rainSpeedMm    * (float)rainCounterHourly;
-        Serial.print("Rain mm: ");
-        Serial.print(floatToString(rainAmountMm, 4));
-        Serial.print("\tRain Inches: ");
-        Serial.println(floatToString(rainAmountInch, 4));
-        wuString += wuRain;
-        wuString += floatToString(rainAmountInch, 4);
-        rainCounterHourly = 0; // reset
-
-        if (reportNewDay())
+        if (report == HOURLY || report == DAILY) // implies the same
         {
-            //printTime();
-            float rainAmountInchDaily  = rainSpeedInch  * (float)rainCounterDaily;
-            wuString += wuDailyRain;
-            wuString += floatToString(rainAmountInchDaily, 4);
+            float rainAmountInch  = rainSpeedInch  * (float)rainCounterHourly;
+            float rainAmountMm    = rainSpeedMm    * (float)rainCounterHourly;
+            Serial.print("Rain mm: ");
+            Serial.print(floatToString(rainAmountMm, 4));
+            Serial.print("\tRain Inches: ");
+            Serial.println(floatToString(rainAmountInch, 4));
+            wuString += wuRain;
+            wuString += floatToString(rainAmountInch, 4);
+            rainCounterHourly = 0; // reset
+        }
+
+        float rainAmountInchDaily  = rainSpeedInch  * (float)rainCounterDaily;
+        wuString += wuDailyRain;
+        wuString += floatToString(rainAmountInchDaily, 4);
+
+        if (report == DAILY)
+        {
             rainCounterDaily = 0;  // reset
         }
     }
@@ -319,10 +325,17 @@ void loop()
         checkForNtpUpdate();
     }
 
-    if (reportNewHour())
+    if (reportNewDay())
     {
-        //printTime();
-        transmitWeatherData();
+        transmitWeatherData(DAILY);
+    }
+    else if (reportNewHour())
+    {
+        transmitWeatherData(HOURLY);
+    }
+    else if (reportEveryOtherMinute())
+    {
+        transmitWeatherData(EVERY_OTHER_MINUTE);
     }
 }
 
@@ -356,7 +369,7 @@ void windInterrupt()
         toggleLedRed();
         ++windCounter;
 
-        if ((previousGustResetTime - currentMillis) < 1000) // if time is less than a second
+        if ((currentMillis - previousGustResetTime) < 1000) // if time is less than a second
             ++gustCounter;
         else
         {

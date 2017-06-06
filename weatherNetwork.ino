@@ -28,6 +28,7 @@ unsigned long currentMillis = 0;
 // current time
 volatile int m_currentHour   = 0;
 volatile int m_currentMinute = 0;
+volatile int m_everyOtherMinute = 0;
 
 void sendNTPpacket()
 {
@@ -152,6 +153,18 @@ bool reportNewDay()
         timeRollover = true;
 
     m_currentHour = nowHour;
+    return timeRollover;
+}
+
+bool reportEveryOtherMinute()
+{
+    int nowMinute = getMinutes(getUnixTime());
+    bool timeRollover = false;
+
+    if ((nowMinute % 2 == 0) && nowMinute != m_everyOtherMinute)
+        timeRollover = true;
+
+    m_everyOtherMinute = nowMinute;
     return timeRollover;
 }
 
