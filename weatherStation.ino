@@ -63,8 +63,9 @@ const String wuRain       = "&rainin=";        // ok
 const String wuDailyRain  = "&dailyrainin=";   // ok
 const String wuBaro       = "&baromin=";       // ok
 const String wuBaroTemp   = "&temp2f=";        // ok
-const String wuWinddir    = "&winddir_avg2m=";       // ok
-const String wuWindspeed  = "&windspdmph_avg2m=";  // ok
+const String wuWinddir    = "&winddir=";       // ok
+const String wuWindspeed  = "&windspdmph=";     // ok
+const String wuWindspeed2m  = "&windspdmph_avg2m=";  // ok
 const String wuGustspeed  = "&windgustmph=";   // ok
 
 SFE_BMP180 pressure;
@@ -153,7 +154,6 @@ void transmitWeatherData(REPORT report)
         Serial.print("WindGust: ");
         Serial.print(windGustMph);
         Serial.println(" mph");
-        Serial.println(gustMaxRecorded);
 
         Serial.print("WindSpeed: ");
         Serial.print(windAmountMph);
@@ -164,12 +164,18 @@ void transmitWeatherData(REPORT report)
         Serial.println(" ms");
 
         windCounter = 0; // reset
-        gustMaxRecorded    = 0; // reset
+        gustMaxRecorded = 0; // reset
 
-        wuString += wuWindspeed;
-        wuString += floatToString(windAmountMph, 4);
         wuString += wuGustspeed;
         wuString += floatToString(windGustMph, 4);
+
+        // instantaneous
+        wuString += wuWindspeed;
+        wuString += floatToString(windAmountMph, 4);
+
+        // avg 2m
+        wuString += wuWindspeed2m;
+        wuString += floatToString(windAmountMph, 4);
     }
 
     if (isRainmeterActive == 1)
